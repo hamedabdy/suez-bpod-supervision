@@ -5,7 +5,7 @@
 Required Files : 
                    + supervision-automation.ps1 (script)
                    + conf.psd1 (conf file)
-                   + 2x .csv status correlation files
+                   + 2x .csv status conversion files
                    + IT4US incidents csv export file
                    + 2x BPOD (d-1 and d-2) csv export files
 
@@ -181,17 +181,18 @@ function countStates ( $stateArray, $newStateArray ) {
 ## Compare Correlation ids and find unmatching states!
 function deltaStateByCorrId ( $array1, $array2 ) {
     Write-Host "Diff(State (IT4US), Etat (BPOD))..."
-    $a = @(), @()
+    $a = @(), @(), @()
     Write-Host "Correlation_id --- State (IT4US) -- Etat (BPOD) -- BPOD ID" -ForegroundColor Cyan
     foreach ( $e in $array1 ) {
         $j = $array2."Numéro du dossier".IndexOf( $e.correlation_id )
-        #if ( $e.correlation_id -eq $array2[$j]."Numéro du dossier" ) {
-            if ( $e.state -ne $array2[$j].Etat ) {
+        if ( $e.correlation_id -contains $array2[$j]."Numéro du dossier" ) {
+            if ( $e.state -notmatch $array2[$j].Etat ) {
                 $a[0] += $e
                 $a[1] += $array2[$j]
+                $a[2] += ( $e | Select-Object *, @{name="Numéro_BPOD"; Expression={$array2[$j]."Numéro du dossier"}}, @{name="Etat_BPOD"; Expression={$array2[$j].Etat}} )
                 Write-host "`t`t$($e.correlation_id) --- $($e.state) -- $($array2[$j].Etat) -- $($array2[$j]."Numéro du dossier")" -ForegroundColor Cyan
             }
-        #}
+        }
     }
     return $a
 }
@@ -209,18 +210,21 @@ function bpodDups ( $array2 ) {
 }
 
 function diffIncNumber ( $array1, $array2 ) {
-    Write-Host "Diff( Incident-number(IT4US), ID_externe_servicenow(BPOD) ) ..."
+    
+    Write-Host "Diff( incident-number(IT4US), ID_externe_servicenow(BPOD) )..."
     $a = $array1 | Where-Object { $_.number -notin $array2.ID_externe_servicenow }
-    return $a
+    $b = $a | Where-Object { $_.correlation_id -notin $array2."Numéro du dossier" }
+    return @{a=$a; b=$b}
 }
 
 function diffCorrId ( $array1, $array2 ) {
-    Write-Host "Diff( Numero(BPOD), corr_id(IT4US) ) ..."
+    Write-Host "Diff( Numéro(BPOD), corr_id(IT4US) )..."
     $a = $array2 | Where-Object { $_."Numéro du dossier" -notin $array1.correlation_id }
     return $a
 }
 
 function fillBpodIncNbr ( $array1, $array2, $emptyIncObj ) {
+    Write-Host "Filling missing INC numbers in BPOD file..."
     $a = foreach ( $e in $emptyIncObj.Group ) {
         $j = $array1.correlation_id.IndexOf( $e."Numéro du dossier" )
         $e.ID_externe_servicenow = $array1[$j].number
@@ -236,33 +240,37 @@ function deltaStats ( $array1, $array2 ) {
     
     $d.desyncStates = deltaStateByCorrId $array1 $array2
     Write-Host "`t\->Writing desync states to file..." -ForegroundColor DarkYellow
-    $d.desyncStates[0] | Export-Csv -NoTypeInformation -Encoding Default -Path ($root+"desync-IT4US.csv")
-    $d.desyncStates[1] | Export-Csv -NoTypeInformation -Encoding Default -Path ($root+"desync-BPOD.csv")
+    $d.desyncStates[2] | Export-Csv -NoTypeInformation -Encoding Default -Path ($root+"desync-IT4US.csv")
+    #$d.desyncStates[1] | Export-Csv -NoTypeInformation -Encoding Default -Path ($root+"desync-BPOD.csv")
     
     $d.it4usDups = it4usDups $array1
     Write-Host "`t\->Writing IT4US duplicate correlation-ids to file..." -ForegroundColor DarkYellow
-    Write-Host ( $d.it4usDups | Select-Object -Property Count, Name, @{name="number"; Expression={$_.Group.number} } | Out-String -Width 500 )
-    $d.it4usDups | Select-Object -Property Count, Name, @{name="number"; Expression={$_.Group.number} } | Export-Csv $($root+"dups-IT4US.csv") -Encoding Default
+    Write-Host ( $d.it4usDups | Select-Object -Property Count, Name, @{name="number"; Expression={$_.Group.number} } | Out-String )
+    $d.it4usDups | Select-Object -Property Count, Name, @{name="number"; Expression={$_.Group.number} } | Export-Csv $($root+"dups-IT4US.csv") -Encoding Default -NoTypeInformation
     
     $d.bpodDups = bpodDups $array2
     Write-Host "`t\->Writing BPOD duplicate incident-numbers to file..." -ForegroundColor DarkYellow
-    Write-Host ( $d.bpodDups | Select-Object -Property Count, Name, @{name="Numéro du dossier"; Expression={$_.Group."Numéro du dossier"} } | Out-String -Width 500 )
+    Write-Host ( $d.bpodDups | Select-Object -Property Count, Name, @{name="Numéro du dossier"; Expression={$_.Group."Numéro du dossier"} } | Out-String )
     $d.bpodDups | Select-Object -Property Count, Name, @{name="Numéro du dossier"; Expression={$_.Group."Numéro du dossier"} } | Export-Csv $($root+"dups-BPOD.csv") -Encoding Default -NoTypeInformation
     
     $d.diffIncNumber = diffIncNumber $array1 $array2
     Write-Host "`t\->Writing IT4US incident-numbers that are NOT IN BPOD to file..." -ForegroundColor DarkYellow
-    Write-Host ( $d.diffIncNumber | Out-String )
-    $d.diffIncNumber | Export-Csv $($root+"diff-IT4US.csv") -Encoding Default -NoTypeInformation
+    #Write-Host ( $d.diffIncNumber[0] | Out-String )
+    $d.diffIncNumber.a | Export-Csv $($root+"diff-IT4US.csv") -Encoding Default -NoTypeInformation
+    $d.diffIncNumber.b | Export-Csv $($root+"diff-IT4US2.csv") -Encoding Default -NoTypeInformation
     
     $d.diffCorrId = diffCorrId $array1 $array2
     Write-Host "`t\->Writing BPOD correlation-ids that are NOT IN TI4US to file..." -ForegroundColor DarkYellow
-    Write-Host ( $d.diffCorrId | Out-String )
-    $d.diffCorrId | Out-File $($root+"diff-BPOD.csv") -Encoding Default
+    if( $d.diffCorrId.Count -eq 0 ) { Write-Host "Found None!" }
+    else {
+        Write-Host ( $d.diffCorrId | Out-String )
+        $d.diffCorrId | Select-Object -Property "Numéro du dossier", "ID_externe_servicenow", "Etat"  | Export-Csv $($root+"diff-BPOD.csv") -Encoding Default -NoTypeInformation
+    }
     
     $d.fillBpodIncNbr = fillBpodIncNbr $array1 $array2 $d.bpodDups[0]
     Write-Host "`t\->Writing new BPOD file having no IT4US incident number to file..." -ForegroundColor DarkYellow
     Write-Host ( $d.fillBpodIncNbr | Out-String )
-    $d.fillBpodIncNbr | Export-Csv $($root+"new-BPOD.csv") -Encoding Default -NoTypeInformation
+    #$d.fillBpodIncNbr | Export-Csv $($root+"new-BPOD.csv") -Encoding Default -NoTypeInformation
     return $d
 }
 
@@ -483,7 +491,7 @@ function main {
     ## Right Here compare states by their corr_ids
     deltaStats -array1 $stateIT4US -array2 $stateBPOD
 
-    throw ""
+    throw "End of Stats!"
 
     <# NOT NEEDED for the time being. Don't need statistical numbers
     ## BPOD : Extracting new incidents by applying delta on (D-1 and D-2) by IDs
